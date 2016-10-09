@@ -3,10 +3,10 @@ import javax.inject.Singleton
 
 import net.codingwell.scalaguice.ScalaModule
 import org.apache.commons.vfs2.{FileName, FileObject}
+import org.http4s.rho._
 import org.http4s.server.SSLSupport.StoreInfo
 import org.http4s.server.blaze._
 import org.http4s.server.{Server, ServerApp}
-import org.http4s.rho._
 import org.json4s._
 import org.json4s.native.Serialization.write
 import org.metaborg.core.editor.{IEditorRegistry, NullEditorRegistry}
@@ -22,9 +22,6 @@ import scala.collection.JavaConverters._
 import scalaz.concurrent.Task
 
 object Main extends ServerApp {
-  type Ref = ISourceRegion
-  type Dec = ISourceLocation
-
   /**
     * Custom serializer for serializing FileObjects to their name relative to
     * the given basename.
@@ -62,7 +59,7 @@ object Main extends ServerApp {
     */
   val analysisService = new RhoService {
     GET / 'project / * |>> { (project: String, rest: List[String]) =>
-      Ok(analysis(project, rest.mkString))
+      Ok(analysis(project, rest.mkString("/")))
     }
   }
 
@@ -70,10 +67,10 @@ object Main extends ServerApp {
     * Compute and return the analysis result
     *
     * @param project
-    * @param file
+    * @param filePath
     * @return
     */
-  def analysis(project: String, file: String): String = {
+  def analysis(project: String, filePath: String): String = {
     val minijavaPath = "/Users/martijn/Projects/MiniJava"
     val minijavaImpl = utils.loadLanguage(minijavaPath)
 
@@ -93,9 +90,14 @@ object Main extends ServerApp {
     lock.close()
 
     // TODO: Get resolutions for the *given* file, not for all files...
-    val result = analysisResults.asScala.flatMap(
-      resolutions(_, minijavaImpl)
-    )
+    val file = spoofax.resourceService.resolve(projectPath + "/" + filePath)
+    val parseUnit = parse(minijavaImpl, file)
+
+    val lockB = context.write()
+    val analysisResult = spoofax.analysisService.analyze(parseUnit, context).result()
+    lockB.close()
+
+    val result = resolutions(analysisResult, minijavaImpl)
 
     serialize(projectFileObject.getName, result)
   }
@@ -117,7 +119,7 @@ object Main extends ServerApp {
   /**
     * Get resolutions for given file
     */
-  def resolutions(analyzeUnit: ISpoofaxAnalyzeUnit, languageImpl: ILanguageImpl): Seq[(Ref, Iterable[Dec])] =
+  def resolutions(analyzeUnit: ISpoofaxAnalyzeUnit, languageImpl: ILanguageImpl): Seq[(ISourceRegion, Iterable[ISourceLocation])] =
     new Tokenizer().tokenizeAll(analyzeUnit.input, languageImpl).flatMap(token => {
       val referenceLocation = JSGLRSourceRegionFactory.fromToken(token)
       val resolutionOpt = Option(spoofax.resolverService.resolve(referenceLocation.startOffset(), analyzeUnit))
