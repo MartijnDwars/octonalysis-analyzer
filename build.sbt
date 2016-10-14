@@ -30,5 +30,9 @@ libraryDependencies ++= Seq(
   "net.codingwell" %% "scala-guice" % "4.1.0",
 
   // JSON processor
-  "org.http4s" %% "http4s-json4s-native" % "0.14.8a"
+  "org.http4s" %% "http4s-json4s-native" % "0.14.8a",
+
+  // Logging (scala-logging = slf4j wrapper, logback-classic = logging backend)
+  "com.typesafe.scala-logging" %% "scala-logging" % "3.5.0",
+  "ch.qos.logback" % "logback-classic" % "1.1.7"
 )

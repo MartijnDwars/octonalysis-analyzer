@@ -1,6 +1,7 @@
 import java.nio.file.Paths
 import javax.inject.Singleton
 
+import com.typesafe.scalalogging.Logger
 import net.codingwell.scalaguice.ScalaModule
 import org.apache.commons.vfs2.{FileName, FileObject}
 import org.http4s.rho._
@@ -22,7 +23,11 @@ import scala.collection.mutable
 import scalaz.concurrent.Task
 
 object Main extends ServerApp {
+  val logger = Logger("Main")
+
   val REPOS_PATH = "/Users/martijn/Documents"
+  val LANGS_PATH = "/Users/martijn/Projects/MiniJava"
+
   val cache = mutable.Map[String, Seq[(ISourceRegion, Iterable[ISourceLocation])]]()
 
   /**
@@ -57,8 +62,6 @@ object Main extends ServerApp {
 
   /**
     * The analysis endpoint
-    *
-    * TODO: Wrap service to show exceptions.?
     */
   val analysisService = new RhoService {
     GET / 'project / * |>> { (project: String, rest: List[String]) =>
@@ -85,37 +88,40 @@ object Main extends ServerApp {
   }
 
   /**
-    * Compute and return the analysis result
-    *
-    * TODO: Do this for *all* files, so that we can cache it for all files, and then filter it on on a page request.
+    * Compute and return the analysis result.
     *
     * @param projectName
     * @param filePath
     * @return
     */
   def analysis(projectName: String, filePath: String): Seq[(ISourceRegion, Iterable[ISourceLocation])] = {
-    val languagePath = "/Users/martijn/Projects/MiniJava"
-    val languageImpl = utils.loadLanguage(languagePath)
+    logger.info("Load language from " + LANGS_PATH)
+    val languageImpl = utils.loadLanguage(LANGS_PATH)
 
     val projectPath = REPOS_PATH + "/" + projectName
     val projectFileObject = spoofax.resourceService.resolve(projectPath)
 
+    logger.info("Select files for language " + languageImpl.id().id)
     val selector = new LanguageFileSelector(spoofax.languageIdentifierService, languageImpl)
     val files = spoofax.resourceService.resolve(projectPath).findFiles(selector)
+
+    logger.info("Parse " + files.length + " files")
     val parseUnits = parse(languageImpl, files)
 
+    logger.info("Create project")
     val project = utils.getOrCreateProject(projectFileObject)
     val context = spoofax.contextService.get(projectFileObject, project, languageImpl)
 
-    // TODO: Abstract try-with-resource
+    logger.info("Analyze " + parseUnits.length + " parse units")
     val lock = context.write()
     val analysisResults = spoofax.analysisService.analyzeAll(parseUnits.toIterable.asJava, context).results()
     lock.close()
 
-    // TODO: Get resolutions for the *given* file, not for all files. Right now, we just re-do the analysis?
+    logger.info("Parse result file")
     val file = spoofax.resourceService.resolve(projectPath + "/" + filePath)
     val parseUnit = parse(languageImpl, file)
 
+    logger.info("Analyze result parse unit")
     val lockB = context.write()
     val analysisResult = spoofax.analysisService.analyze(parseUnit, context).result()
     lockB.close()
