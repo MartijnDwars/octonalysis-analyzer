@@ -10,18 +10,21 @@ import org.http4s.server.{Server, ServerApp}
 import org.json4s._
 import org.json4s.native.Serialization.write
 import org.metaborg.core.editor.{IEditorRegistry, NullEditorRegistry}
-import org.metaborg.core.language.ILanguageImpl
+import org.metaborg.core.language.{ILanguageImpl, LanguageFileSelector}
 import org.metaborg.core.project.{IProjectService, SimpleProjectService}
 import org.metaborg.core.source.{ISourceLocation, ISourceRegion, SourceRegion}
 import org.metaborg.spoofax.core.syntax.JSGLRSourceRegionFactory
 import org.metaborg.spoofax.core.unit.{ISpoofaxAnalyzeUnit, ISpoofaxParseUnit}
 import org.metaborg.spoofax.core.{Spoofax, SpoofaxModule}
-import org.metaborg.util.resource.ExtensionFileSelector
 
 import scala.collection.JavaConverters._
+import scala.collection.mutable
 import scalaz.concurrent.Task
 
 object Main extends ServerApp {
+  val REPOS_PATH = "/Users/martijn/Documents"
+  val cache = mutable.Map[String, Seq[(ISourceRegion, Iterable[ISourceLocation])]]()
+
   /**
     * Custom serializer for serializing FileObjects to their name relative to
     * the given basename.
@@ -59,47 +62,65 @@ object Main extends ServerApp {
     */
   val analysisService = new RhoService {
     GET / 'project / * |>> { (project: String, rest: List[String]) =>
-      Ok(analysis(project, rest.mkString("/")))
+      Ok(cachedAnalysis(project, rest.mkString("/")))
     }
+  }
+
+  /**
+    * Retrieve the cached analysis result (if available) or compute the
+    * analysis.
+    *
+    * @param projectName
+    * @param filePath
+    * @return
+    */
+  def cachedAnalysis(projectName: String, filePath: String): String = {
+    val key = projectName + "/" + filePath
+    val resolutions = cache.getOrElseUpdate(key, analysis(projectName, filePath))
+
+    val projectPath = REPOS_PATH + "/" + projectName
+    val projectPathName = spoofax.resourceService.resolve(projectPath).getName
+
+    serialize(projectPathName, resolutions)
   }
 
   /**
     * Compute and return the analysis result
     *
-    * @param project
+    * TODO: Do this for *all* files, so that we can cache it for all files, and then filter it on on a page request.
+    *
+    * @param projectName
     * @param filePath
     * @return
     */
-  def analysis(project: String, filePath: String): String = {
-    val minijavaPath = "/Users/martijn/Projects/MiniJava"
-    val minijavaImpl = utils.loadLanguage(minijavaPath)
+  def analysis(projectName: String, filePath: String): Seq[(ISourceRegion, Iterable[ISourceLocation])] = {
+    val languagePath = "/Users/martijn/Projects/MiniJava"
+    val languageImpl = utils.loadLanguage(languagePath)
 
-    val projectPath = "/Users/martijn/Documents/minijava/"
+    val projectPath = REPOS_PATH + "/" + projectName
     val projectFileObject = spoofax.resourceService.resolve(projectPath)
 
-    // TODO: Get extension from language config, or better, make it a "LanguageFilter"
-    val files = spoofax.resourceService.resolve(projectPath).findFiles(new ExtensionFileSelector("mjv"))
-    val parseUnits = parse(minijavaImpl, files)
+    val selector = new LanguageFileSelector(spoofax.languageIdentifierService, languageImpl)
+    val files = spoofax.resourceService.resolve(projectPath).findFiles(selector)
+    val parseUnits = parse(languageImpl, files)
 
     val project = utils.getOrCreateProject(projectFileObject)
-    val context = spoofax.contextService.get(projectFileObject, project, minijavaImpl)
+    val context = spoofax.contextService.get(projectFileObject, project, languageImpl)
 
     // TODO: Abstract try-with-resource
     val lock = context.write()
     val analysisResults = spoofax.analysisService.analyzeAll(parseUnits.toIterable.asJava, context).results()
     lock.close()
 
-    // TODO: Get resolutions for the *given* file, not for all files...
+    // TODO: Get resolutions for the *given* file, not for all files. Right now, we just re-do the analysis?
     val file = spoofax.resourceService.resolve(projectPath + "/" + filePath)
-    val parseUnit = parse(minijavaImpl, file)
+    val parseUnit = parse(languageImpl, file)
 
     val lockB = context.write()
     val analysisResult = spoofax.analysisService.analyze(parseUnit, context).result()
     lockB.close()
 
-    val result = resolutions(analysisResult, minijavaImpl)
-
-    serialize(projectFileObject.getName, result)
+    resolutions(analysisResult, languageImpl)
   }
 
   /**
@@ -124,11 +145,9 @@ object Main extends ServerApp {
       val referenceLocation = JSGLRSourceRegionFactory.fromToken(token)
       val resolutionOpt = Option(spoofax.resolverService.resolve(referenceLocation.startOffset(), analyzeUnit))
 
-      resolutionOpt.map(resolution => {
-        val declarationLocations = resolution.targets.asScala
-
-        referenceLocation -> declarationLocations
-      })
+      resolutionOpt.map(resolution =>
+        referenceLocation -> resolution.targets.asScala
+      )
     })
 
   /**
